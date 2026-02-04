@@ -80,27 +80,33 @@ app.post("/render-mp4", async (req, res) => {
     browser = null;
 
     // PNG + MP3 -> MP4 (ffmpeg must be in PATH inside Docker image)
-    await execFileAsync("ffmpeg", [
-      "-y",
-      "-loop",
-      "1",
-      "-i",
-      pngPath,
-      "-i",
-      mp3Path,
-      "-c:v",
-      "libx264",
-      "-tune",
-      "stillimage",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-shortest",
-      mp4Path
-    ]);
+await execFileAsync("ffmpeg", [
+  "-y",
+  "-loop", "1",
+  "-i", pngPath,
+  "-i", mp3Path,
+  "-c:v", "libx264",
+  "-preset", "ultrafast",
+  "-pix_fmt", "yuv420p",
+  "-c:a", "aac",
+  "-b:a", "96k",
+  "-shortest",
+  mp4Path
+]);
+await execFileAsync("ffmpeg", [
+  "-y",
+  "-loop", "1",
+  "-i", pngPath,
+  "-i", mp3Path,
+  "-c:v", "libx264",
+  "-preset", "ultrafast",
+  "-pix_fmt", "yuv420p",
+  "-c:a", "aac",
+  "-b:a", "96k",
+  "-shortest",
+  mp4Path
+]);
+
 
     const mp4 = await fsp.readFile(mp4Path);
 
