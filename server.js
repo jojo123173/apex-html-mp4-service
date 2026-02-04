@@ -1,6 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const os = require("os");
@@ -15,10 +14,16 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "80mb" })); // html + mp3 base64 can be big
 
-// simple API key protection
+// API key protection
 const API_KEY = process.env.API_KEY || "CHANGE_ME";
 
+// Health endpoint for Render/Railway checks
+app.get("/health", (req, res) => res.json({ ok: true }));
+
 app.post("/render-mp4", async (req, res) => {
+  let tmpDir = null;
+  let browser = null;
+
   try {
     const key = req.header("x-api-key");
     if (!key || key !== API_KEY) {
@@ -30,30 +35,38 @@ app.post("/render-mp4", async (req, res) => {
       return res.status(400).json({ error: "html and mp3_base64 required" });
     }
 
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "apex-mp4-"));
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "apex-mp4-"));
     const id = crypto.randomBytes(8).toString("hex");
 
     const pngPath = path.join(tmpDir, `${id}.png`);
     const mp3Path = path.join(tmpDir, `${id}.mp3`);
     const mp4Path = path.join(tmpDir, `${id}.mp4`);
 
-    // write mp3
+    // Write MP3 from base64
     await fsp.writeFile(mp3Path, Buffer.from(mp3_base64, "base64"));
 
-    // render html -> png
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    // Render HTML -> PNG
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+        "--single-process"
+      ]
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
     await page.setContent(html, { waitUntil: "networkidle0" });
-    await page.screenshot({ path: pngPath });
-    await browser.close();
+    await page.screenshot({ path: pngPath, type: "png" });
 
-    // png + mp3 -> mp4
-    // (ffmpeg must be in PATH)
+    await browser.close();
+    browser = null;
+
+    // PNG + MP3 -> MP4 (ffmpeg must be in PATH inside Docker)
     await execFileAsync("ffmpeg", [
       "-y",
       "-loop", "1",
@@ -68,19 +81,31 @@ app.post("/render-mp4", async (req, res) => {
       mp4Path
     ]);
 
-    const mp4 = fs.readFileSync(mp4Path);
+    const mp4Buffer = await fsp.readFile(mp4Path);
 
     res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", `inline; filename="presentation_${id}.mp4"`);
-    res.status(200).send(mp4);
-
-    // cleanup
-    fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="presentation_${id}.mp4"`
+    );
+    return res.status(200).send(mp4Buffer);
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "render failed", details: String(e) });
+    console.error("Render failed:", e);
+    return res.status(500).json({ error: "render failed", details: String(e) });
+  } finally {
+    // Ensure browser closes if error occurred mid-way
+    try {
+      if (browser) await browser.close();
+    } catch (_) {}
+
+    // Always cleanup temp folder
+    try {
+      if (tmpDir) await fsp.rm(tmpDir, { recursive: true, force: true });
+    } catch (_) {}
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`MP4 service running on http://localhost:${PORT}`));
+app.listen(PORT, () =>
+  console.log(`MP4 service running on http://localhost:${PORT}`)
+);
